@@ -162,8 +162,7 @@ def blastn_and_parse(
 
         # Save final results
         final_file_name = save_results(results, file_format=file_format)
+        return final_file_name
 
     else:
-        print(f"File {file_path} not found.")
-
-    return final_file_name
+        raise FileNotFoundError(f"File {file_path} not found.")
