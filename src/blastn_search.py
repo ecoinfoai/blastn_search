@@ -5,6 +5,7 @@ import yaml
 import pandas as pd
 from tqdm import tqdm
 import time
+from functools import lru_cache
 from typing import List, Tuple, Dict, Union, Any
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from Bio.Blast import NCBIWWW, NCBIXML
@@ -25,12 +26,13 @@ def read_config(file_path: str) -> Tuple[str, str]:
         )
 
 
-def blastn(sequence: str) -> NCBIXML.Record:
+def blastn(sequence: str) -> Any:
     result_handle = NCBIWWW.qblast("blastn", "nt", sequence)
     blast_record = NCBIXML.read(result_handle)
     return blast_record
 
 
+@lru_cache(maxsize=None)
 def get_taxa_info(tax_id: str) -> Dict[str, str]:
     try:
         handle = Entrez.efetch(db="taxonomy", id=tax_id, retmode="xml")
@@ -43,7 +45,7 @@ def get_taxa_info(tax_id: str) -> Dict[str, str]:
 
 
 def parse_results(
-    blast_record: NCBIXML.Record, fasta: SeqIO.SeqRecord, hit_seqs: int
+    blast_record: Any, fasta: SeqIO.SeqRecord, hit_seqs: int
 ) -> List[Dict[str, Union[str, int, float, Dict[str, str]]]]:
     if not blast_record.alignments:
         return [
@@ -82,11 +84,6 @@ def blastn_sequences(
         executor.submit(blastn, str(fasta.seq)): fasta
         for fasta in fasta_sequences[start_index:end_index]
     }
-    while True:
-        time.sleep(3)
-        completed = [f for f in step_futures if f.done()]
-        if len(completed) >= len(step_futures) / 2:
-            break
     return step_futures
 
 
@@ -102,12 +99,6 @@ def parse_and_save_results(
             parsed_results = parse_results(blast_record, fasta, hit_seqs)
             if parsed_results:
                 results.extend(parsed_results)
-            if len(results) % 5 == 0:
-                file_name = f"blast_results_{time.time()}.json"
-                with open(
-                    file_name, "w"
-                ) as f:  # changed to create new file for each run
-                    json.dump(results, f, indent=4)
         except Exception as e:
             logging.error(
                 f"Failed to get results for sequence {fasta.id}: {e}"
@@ -143,7 +134,8 @@ def blastn_and_parse(
 ) -> str:
 
     if os.path.exists(file_path):  # added file existence check
-        fasta_sequences = list(SeqIO.parse(open(file_path), "fasta"))
+        with open(file_path) as f:
+            fasta_sequences = list(SeqIO.parse(f, "fasta"))
         total_seqs = len(fasta_sequences)
         results: List[Dict[str, Union[str, int, float, Dict[str, str]]]] = []
 
@@ -154,9 +146,6 @@ def blastn_and_parse(
 
         # Create tqdm object for tracking progress, updated part
         pbar = tqdm(total=total_steps, ncols=60)
-
-        # Store names of intermediate files, added part
-        intermediate_files: List[str] = []
 
         with ThreadPoolExecutor() as executor:
             for i in range(0, total_seqs, 10):  # Change batch size to 10
@@ -171,21 +160,9 @@ def blastn_and_parse(
                 pbar.update(1)
                 pbar.set_description(f"Progress: {pbar.n}/{total_steps}")
 
-                # Save intermediate results every 5 sequences, updated part
-                if len(results) % 5 == 0:
-                    file_name = save_results(results, file_format=file_format)
-                    # Store name of intermediate file, added part
-                    intermediate_files.append(file_name)
-
         # Save final results
         final_file_name = save_results(results, file_format=file_format)
-
-        # Delete intermediate files, leaving the final file, added part
-        for file_name in intermediate_files:
-            if file_name != final_file_name:
-                os.remove(file_name)
+        return final_file_name
 
     else:
-        print(f"File {file_path} not found.")
-
-    return final_file_name
+        raise FileNotFoundError(f"File {file_path} not found.")
